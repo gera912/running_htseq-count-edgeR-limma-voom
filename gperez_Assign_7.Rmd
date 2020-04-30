@@ -1,0 +1,366 @@
+---
+title: "gperez_Assig_7"
+author: "Gera"
+date: "9/10/2019"
+output: html_document
+---
+This is an exercise in bash and R to do RNA-Seq differential expression analysis.
+
+setwd("/Users/gerardoperez/Documents/shell/Bi623/Assign7")
+ 
+All files for this assignment may be found in: /projects/bgmp/shared/Bi623/assign7/
+
+1. HTSeq-count
+
+Copy or link these files to a working directory on Talapas:
+```{r engine = 'bash', eval = FALSE}
+cd bgmp/projects/bgmp/gperez8/Bi623/Ex7
+
+scp /projects/bgmp/shared/Bi623/assign7/Bt* .
+
+```
+
+Write an sbatch script (submitted as a job on Talapas) to count the number of reads mapping uniquely to each gene in the stickleback reference, for all SAM files.
+```{r engine = 'bash', eval = FALSE}
+#!/bin/bash
+
+#SBATCH --account=bgmp
+#SBATCH --partition=bgmp
+#SBATCH --job-name=htseq
+#SBATCH --output=slurm-%j-%x.out
+
+#SBATCH --time=0-01:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+
+
+conda deactivate
+conda deactivate
+conda deactivate
+conda deactivate
+conda activate bgmp_py3
+
+ml purge ml slurm easybuild intel/2017a HTSeq/0.9.1-Python-3.6.1
+
+/usr/bin/time -v python -m HTSeq.scripts.count --mode union --type exon --stranded no   Bt_conv_5.unpaired_uniq   Bt_conv_6.unpaired_uniq   Bt_conv_7.unpaired_uniq   Bt_mono_2.unpaired_uniq   Bt_mono_6.unpaired_uniq   Bt_mono_7.unpaired_uniq  Gasterosteus_aculeatus.BROADS1.85.gtf>Gacu_readcounts.txt
+
+
+```
+
+
+Note the column totals calculated by htseq-count, at the bottom of your file. (Naturally, you would normally exclude these in R before any kind of differential expression analysis.) What information do these totals contain? 
+
+```{r engine = 'bash', eval = FALSE}
+tail  Gacu_readcounts.txt 
+ENSGACG00000022902	0	0	0	0	0	0
+ENSGACG00000022903	0	0	0	0	0	0
+ENSGACG00000022904	0	0	0	0	0	0
+ENSGACG00000022905	0	0	0	0	0	0
+ENSGACG00000022906	0	0	0	0	0	0
+__no_feature	135045	124896	139486	109555	136855	83517
+__ambiguous	2566	2712	2605	2595	2681	2264
+__too_low_aQual	0	0	0	0	0	0
+__not_aligned	0	0	0	0	0	0
+__alignment_not_unique	0	0	0	0	0	0
+
+```
+
+**The information that contains are columns of number reads that have no features, were ambiguous, discarded due to low quality sequencing , unaligned reads, and reads with non unique alignments. This inform us of what was discarded.**
+
+
+2. Evaluating the effect of normalization on count data
+
+In R, read in the file /projects/bgmp/shared/Bi623/assign7/Gacu_gut_counts.tsv (name the df “Counts”)
+
+Copy file to a working directory on Talapas:
+```{r engine = 'bash', eval = FALSE}
+
+scp hpc:/projects/bgmp/shared/Bi623/assign7/Gacu_gut_counts.tsv .
+
+```
+
+```{r setup}
+# sets the directory to save files from this Rscript
+setwd("/Users/gerardoperez/Documents/shell/Bi623/Assign7")
+knitr::opts_knit$set(root.dir = "/Users/gerardoperez/Documents/Bio623/Ex6" )
+
+library(edgeR)
+library(VennDiagram)
+
+```
+
+
+In R, read in the file /projects/bgmp/shared/Bi623/assign7/Gacu_gut_counts.tsv (name the df “Counts”)
+When you read in the file, set row.names=1, and stringsAsFactors=FALSE.
+```{r}
+
+setwd("/Users/gerardoperez/Documents/shell/Bi623/Assign7")
+
+# import file into R for analysis
+Counts<- read.table("Gacu_gut_counts.tsv",  header=T,  row.names=1, stringsAsFactors=FALSE, sep="\t")
+```
+
+Using the unnormalized values in Counts, plot library 1A_02 values vs. library 1A_03 values. Draw a line through the origin (intercept=0) with slope=1, which would be the expectation for equal counts between the two libraries.
+
+```{r}
+
+# Creates a plolt with certain parameters.
+plot(Counts$X1A_02, Counts$X1A_03, xlim=c(0,16000), ylim=c(0,16000))
+# Creates a line that has Y intercept at 0 and a slope of 1
+abline(a=0, b=1)
+```
+
+What do you notice about the relationship between counts for these libraries?
+
+**The relationship between both counts is that majority is not a one to one relationship. Meaning that the genes are not evenly expressed.**
+
+Now plot the normalized expression values for library 1A_02 vs those for library 1A_03 as above, including the slope=1 line
+```{r}
+
+# stores the raw counts as a “DGEList” object.
+dge <- DGEList(counts=Counts)
+
+# Calculates TMM normalization factors and adds it to dge
+dge <- calcNormFactors(dge)
+
+# Applies the TMM normalization factors and adjusts for library size by converting to copies per million (cpm)
+TMMCPM <- as.data.frame(cpm(dge,
+                        normalized.lib.sizes=TRUE))
+
+# Creates a plolt with certain parameters.
+plot(TMMCPM$X1A_02,TMMCPM$X1A_03, xlim=c(0,16000), ylim=c(0,16000))
+
+# Creates a line that has Y intercept at 0 and a slope of 1
+abline(a=0, b=1)
+```
+
+How has the relationship changed, and what does it mean regarding the effectiveness of normalization?
+
+**The relationship between both counts has changed that they are now mojority one to one relationship. Meaning that the genes are evenly expressed and the normalization was effective.**
+
+3. Testing and visualizing effects of Population and Treatment on differential expression using the negative binomial generalized linear model approach in edgeR (20 points total)
+
+***My values were a little different compared to every one else. Could be the EdgeR version. Clay said this was ok.***
+
+```{r}
+#Define a new DGEList object to work with
+dge.er <- DGEList(counts=Counts)
+
+# Gets rid of genes expressed at low levels in many of the samples, which are not reliably tested. We only keep genes with at least one read per million (cpm) in at least 8 samples.
+keep.dge.er <- rowSums(cpm(dge.er)>=1) >= 8
+dge.er <- dge.er[keep.dge.er,]
+dim(dge.er)
+
+```
+How many genes are we dealing with now? 
+
+**We are now dealing with 16877 genes.** 
+ 
+```{r}
+# calculates TMM normalization factors
+dge.er <- calcNormFactors(dge.er)
+
+setwd("/Users/gerardoperez/Documents/shell/Bi623/Assign7")
+
+# import file into R for analysis
+Targets.er<-read.delim("Gacu_gut_metadata.tsv")
+
+
+# Combines Population and Treatment variables into one
+PopTrt <- paste(Targets.er$Population,
+                Targets.er$Treatment, sep=".")
+
+PopTrt
+
+# Uses the model.matrix() function to specify the experimental design
+#generalized linear model that includes the “intercept” (0) and the effects of the 4 factor level combinations
+design.er <- model.matrix(~0 + PopTrt)
+
+design.er
+
+# 4 groups: Bt.CV, Bt.GF, RS.CV, and RS.GF
+colnames(design.er)
+
+``` 
+
+
+```{r}
+
+#Estimates the dispersion parameter for each gene
+dge.er <- estimateGLMCommonDisp(dge.er, design.er)
+dge.er <- estimateGLMTrendedDisp(dge.er, design.er)
+dge.er <- estimateGLMTagwiseDisp(dge.er, design.er)
+
+#fits the full generalized linear model, incorporating the dispersion estimates
+fit.er <- glmFit(dge.er, design.er)
+
+# Contrast the average of Bt.CV and Bt.GF vs. the average of RS.CV and RS.GF, to test for the Population effect.
+lrtPop <- glmLRT(fit.er, contrast=c(-.5,-.5,.5,.5))
+
+#Looks at the genes with the lowest FDR-corrected p-values
+topTags(lrtPop)
+
+#writes all of the test results to file
+write.table(topTags(lrtPop, n=16877), 'edgeR_PopLRT.txt',
+            sep='\t')
+
+#Summarizes how many genes are differentially expressed by Population
+de.er <- decideTestsDGE(lrtPop, p=0.05)
+summary(de.er)
+
+
+#Visualizes the differential expression patterns with a “smear plot”
+detags.er <- rownames(fit.er)[as.logical(de.er)]
+plotSmear(lrtPop, de.tags=detags.er, ylim=c(-10,10))
+abline(h = c(-2, 2), col = "blue")
+
+```
+ 
+ What do the red dots represent, and what boundaries do the blue lines mark?
+ 
+**The red dots represents differentially expressed and signficantly expressed genes. The blue lines are arbitrary lines, they are bounadray of log 2 and mark 2-fold changes.**
+ 
+ 
+```{r}
+# Contrast the average of Bt.CV and RS.CV vs. the average of Bt.GF and RS.GF for test for the Treatment (microbiota)
+lrtTrt <- glmLRT(fit.er, contrast=c(-.5,.5,-.5,.5))
+
+# Looks at the genes with the lowest FDR-corrected p-values
+topTags(lrtTrt)
+
+# Writes all of the test results to file
+write.table(topTags(lrtTrt, n=16877), 'edgeR_TrtLRT.txt',
+            sep='\t')
+
+#Multiple Testing Across Genes And Contrasts. Giving the desired size of the test, 0.05.
+de.er2 <- decideTestsDGE(lrtTrt, p=0.05)
+
+
+dim(topTags(lrtTrt, n=16877,p.value = 0.05))
+```
+
+How many genes are differentially expressed by Treatment?
+
+**They are 49 genes that are differentially expressed by Treatment.**
+
+```{r}
+# create smear plots for Population to Treatment comparison. 
+par(mfrow=c(1,2))
+detags.er <- rownames(fit.er)[as.logical(de.er)]
+plotSmear(lrtPop, de.tags=detags.er, ylim=c(-10,10), xlab="Average logCPM \nPopulation")
+abline(h = c(-2, 2), col = "blue")
+
+detags.er2 <- rownames(fit.er)[as.logical(de.er2)]
+plotSmear(lrtTrt, de.tags=detags.er2, ylim=c(-10,10), xlab="Average logCPM \nTreatment")
+abline(h = c(-2, 2), col = "blue")
+```
+
+
+How is it different from the Population smear plot?
+
+**The difference is there is less differentially and signficantly expressed genes in the treatment compared to population.**
+
+What does this say about the relative effects of stickleback population and microbiota treatment on gut gene expression in this experiment?
+
+**This says that the treatment has a major impact on differentially and signficantly expressed genes. The treatment significantly reduces the amount of genes that are differentially and signficantly expressed.**
+
+4. Testing effects of Population and Treatment on differential expression using the general linear model approach in limma (with voom()) 
+
+```{r}
+#Repeat everything you did for the edgeR analysis up to the dispersion estimates, but name the appropriate objects with a “.lv” suffix instead of “.er”
+dge.lv <- DGEList(counts=Counts)
+dge.lv <- calcNormFactors(dge.lv)
+
+keep.dge.lv <- rowSums(cpm(dge.lv)>=1) >= 8
+dge.lv <- dge.lv[keep.dge.lv,]
+dge.lv <- calcNormFactors(dge.lv)
+
+setwd("/Users/gerardoperez/Documents/shell/Bi623/Assign7")
+Targets.lv<-read.delim("Gacu_gut_metadata.tsv")
+
+head(Targets.lv)
+PopTrt <- paste(Targets.lv$Population,
+                Targets.lv$Treatment, sep=".")
+
+PopTrt
+design.lv <- model.matrix(~0 + PopTrt)
+design.lv
+colnames(design.lv)
+
+#  Generate “precision weights” from the mean-variance relationship.
+v.lv <- voom(dge.lv, design.lv)
+
+# Fits the full general linear model, which includes the voom() precision weights
+fit.lv <- lmFit(v.lv, design.lv)
+fit.lv <- eBayes(fit.lv)
+
+# Contrast the average of Bt.CV and Bt.GF vs. the average of RS.CV and RS.GF
+fit.lv.Pop <- contrasts.fit(fit.lv,
+                            contrast=c(-.5,-.5,.5,.5))
+fit.lv.Pop <- eBayes(fit.lv.Pop)
+
+
+#Looks at the genes with the lowest FDR-corrected p-values:
+topTable(fit.lv.Pop)
+
+#writes all of the test results to file
+write.table(topTable(fit.lv.Pop, n=16877),
+                     'limma_PopLRT.txt', sep='\t')
+
+#Summarize how many genes are differentially expressed by Population, using an FDR = 0.05. In this case, practice subsetting topTable(fit.lv.Pop, n=16877) using the appropriate logical operators
+fit.lv.Pop_FDR_0.05<-subset(topTable(fit.lv.Pop, n=16877),  topTable(fit.lv.Pop, n=16877)$adj.P.Val<0.05)
+summary(fit.lv.Pop_FDR_0.05)
+dim(fit.lv.Pop_FDR_0.05)
+```
+**Genes are differentially expressed by Population, using an FDR = 0.05, were 2809.**
+
+
+```{r}
+#contrast the average of Bt.CV and RS.CV vs. the average of Bt.GF and RS.GF for Treatment contrast
+fit.lv.Trt <- contrasts.fit(fit.lv,
+                            contrast=c(-.5,.5,-.5,.5))
+fit.lv.Trt <- eBayes(fit.lv.Trt)
+
+#Looks at the genes with the lowest FDR-corrected p-values
+topTable(fit.lv.Trt)
+
+#writes all of the test results to a file
+write.table(topTable(fit.lv.Trt, n=16877),
+                     'limma_TrtLRT.txt', sep='\t')
+
+#Summarize how many genes are differentially expressed by Treatment, using an FDR = 0.05. Again, subset topTable(fit.lv.Trt, n=16877) using the appropriate logical operator
+fit.lv.Trt_FDR_0.05<-subset(topTable(fit.lv.Trt, n=16877),  topTable(fit.lv.Trt, n=16877)$adj.P.Val<0.05)
+summary(fit.lv.Trt_FDR_0.05)
+dim(fit.lv.Trt_FDR_0.05)
+
+```
+**Genes are differentially expressed by Treatment, using an FDR = 0.05, were 0.**
+
+```{r}
+
+# Gets the toptags from the Population test that have a cut-off of 0,05 and stores this in a variable.
+top_tags_pop_0.05<-topTags(lrtPop, n=16877, p.value = 0.05)
+
+# combines sig. genes, of the Population test, at FDR=.05 between edgeR and limma approaches.
+pop_inter<-intersect(rownames(fit.lv.Pop_FDR_0.05), rownames(top_tags_pop_0.05))
+
+# creates a Venn Diagram to show the overlap of sig. genes (FDR=.05), of the Population test, between edgeR and limma approaches
+draw.pairwise.venn(length(rownames(fit.lv.Pop_FDR_0.05)), length(rownames(top_tags_pop_0.05)), length(pop_inter),  category=c("Limma", "edgeR"), fill =c("green", "yellow"))
+```
+
+```{r}
+
+# Gets the toptags from the Treatment test that have a cut-off of 0,05 and strores this in a variable.
+top_tags_lrt_0.05<-topTags(lrtTrt, n=16877, p.value = 0.05)
+
+# combines sig. genes, of the Treatment test, at FDR=.05 between edgeR and limma approaches.
+Trt_inter<-intersect(rownames(fit.lv.Trt_FDR_0.05), rownames(top_tags_lrt_0.05))
+
+# creates a Venn Diagram to show the overlap of sig. genes (FDR=.05), of the Treatment test, between edgeR and limma approaches
+draw.pairwise.venn(length(rownames(fit.lv.Trt_FDR_0.05)), length(rownames(top_tags_lrt_0.05)), length(Trt_inter), category=c("Limma", "edgeR"), fill =c("green", "yellow"))
+```
+
+Briefly comment on any differences in the numbers of differentially expressed genes between the edgeR and limma-voom approaches. In general do the approaches agree? Is one substanitally more conservative than the other?
+
+**They were differences, for the Population test there was an overlap of 2285 differentially expressed genes but 467 to 524 were not. In the Treatment test, there was no overlap and a difference of 49 differentially expressed genes in edgeR to 0 in limma. The approaches due agree on the same result that treatment singinficantly reduces the amount of genes that are differentially expressed. From these results, it seems like limma is more conservative since there was less values in the Population test and Treatment test when comparing to edgeR.**
